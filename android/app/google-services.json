@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "263959451950",
+    "project_id": "cambustracker",
+    "storage_bucket": "cambustracker.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:263959451950:android:4ca874dd80474ae8bf82bf",
+        "android_client_info": {
+          "package_name": "com.niranjan.cambustracker"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "263959451950-q8j09m02m5g3nbs2hthi5i7ba20orukp.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.niranjan.cambustracker",
+            "certificate_hash": "984cb53ab36b45c845fdc8a7b97eea474bb73ffc"
+          }
+        },
+        {
+          "client_id": "263959451950-ap3dqbit7lrnd7gb1mmcfu4mp1rasiee.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAEystrkiyrrbO0GWxphvGnvBBIyAlfn_Q"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "263959451950-ap3dqbit7lrnd7gb1mmcfu4mp1rasiee.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

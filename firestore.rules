@@ -1,0 +1,27 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Users collection
+    // Users can read/write their own profile
+    match /users/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow create: if request.auth != null && request.auth.uid == userId;
+      allow update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Buses collection
+    // Anyone authenticated can read bus locations (for students)
+    // Only drivers can write to bus documents
+    match /buses/{busId} {
+      // All authenticated users can read (students need this)
+      allow read: if request.auth != null;
+      
+      // Only drivers can write bus locations
+      allow write: if request.auth != null 
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "driver";
+    }
+  }
+}
