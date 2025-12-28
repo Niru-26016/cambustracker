@@ -86,7 +86,7 @@ class FirestoreService {
       'isActive': true,
       'driverId': driverId,
       'updatedAt': FieldValue.serverTimestamp(),
-    });
+    }, SetOptions(merge: true)); // Preserve existing fields like routeId
   }
 
   /// Stop a trip for a bus
@@ -276,17 +276,36 @@ class FirestoreService {
     }
   }
 
-  /// Assign a driver to a bus
+  /// Assign a driver to a bus (enforces one-bus-one-driver)
   Future<void> assignDriverToBus({
     required String driverId,
     required String busId,
   }) async {
     final batch = _firestore.batch();
 
-    // Update driver
+    // First, check if another driver is currently assigned to this bus
+    final existingDriverQuery = await _driversRef
+        .where('assignedBusId', isEqualTo: busId)
+        .get();
+
+    // Unassign any existing drivers from this bus
+    for (final doc in existingDriverQuery.docs) {
+      if (doc.id != driverId) {
+        batch.update(doc.reference, {'assignedBusId': null});
+      }
+    }
+
+    // Also check if this driver was assigned to a different bus and clear that bus's driverId
+    final driverDoc = await _driversRef.doc(driverId).get();
+    final previousBusId = driverDoc.data()?['assignedBusId'];
+    if (previousBusId != null && previousBusId != busId) {
+      batch.update(_busesRef.doc(previousBusId), {'driverId': null});
+    }
+
+    // Update driver with new bus
     batch.update(_driversRef.doc(driverId), {'assignedBusId': busId});
 
-    // Update bus
+    // Update bus with new driver
     batch.update(_busesRef.doc(busId), {'driverId': driverId});
 
     await batch.commit();

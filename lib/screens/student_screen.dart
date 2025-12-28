@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'dart:ui' as ui;
+import 'package:flutter/services.dart'; // For ByteData
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -31,6 +33,11 @@ class _StudentScreenState extends State<StudentScreen>
   List<Map<String, String>> _availableBuses = [];
   bool _isSelectingBus = true;
 
+  // Route selection state
+  String? _selectedRouteId;
+  String? _selectedRouteName;
+  List<Map<String, dynamic>> _availableRoutes = [];
+
   // Navigation state
   List<LatLng> _walkingPath = [];
   RouteStop? _nearestStop;
@@ -38,18 +45,60 @@ class _StudentScreenState extends State<StudentScreen>
   String? _durationText;
   bool _showingNavigation = false;
 
+  // Custom bus marker
+  BitmapDescriptor? _busMarkerIcon;
+
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 4, vsync: this);
+    _createBusDotMarker();
+    _loadAvailableRoutes();
     _loadAvailableBuses();
     _loadUserBusSelection();
+  }
+
+  Future<void> _createBusDotMarker() async {
+    final ui.PictureRecorder pictureRecorder = ui.PictureRecorder();
+    final Canvas canvas = Canvas(pictureRecorder);
+    final Paint paint = Paint()..color = Colors.green;
+    final Paint borderPaint = Paint()..color = Colors.white;
+    final double radius = 24.0;
+
+    // Draw white border
+    canvas.drawCircle(Offset(radius, radius), radius, borderPaint);
+    // Draw green dot
+    canvas.drawCircle(Offset(radius, radius), radius - 6, paint);
+
+    final ui.Image image = await pictureRecorder.endRecording().toImage(
+      (radius * 2).toInt(),
+      (radius * 2).toInt(),
+    );
+    final ByteData? byteData = await image.toByteData(
+      format: ui.ImageByteFormat.png,
+    );
+
+    if (byteData != null) {
+      final icon = BitmapDescriptor.fromBytes(byteData.buffer.asUint8List());
+      setState(() => _busMarkerIcon = icon);
+    }
   }
 
   @override
   void dispose() {
     _tabController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadAvailableRoutes() async {
+    final routes = await _firestoreService.getRoutes();
+    if (mounted) {
+      setState(
+        () => _availableRoutes = routes
+            .map((r) => {'id': r.routeId, 'name': r.name})
+            .toList(),
+      );
+    }
   }
 
   Future<void> _loadAvailableBuses() async {
@@ -206,9 +255,11 @@ class _StudentScreenState extends State<StudentScreen>
                       markerId: MarkerId(_trackedBus!.busId),
                       position: LatLng(_trackedBus!.lat, _trackedBus!.lng),
                       rotation: _trackedBus!.bearing,
-                      icon: BitmapDescriptor.defaultMarkerWithHue(
-                        BitmapDescriptor.hueGreen,
-                      ),
+                      icon:
+                          _busMarkerIcon ??
+                          BitmapDescriptor.defaultMarkerWithHue(
+                            BitmapDescriptor.hueGreen,
+                          ),
                       infoWindow: InfoWindow(
                         title: _trackedBus!.busName,
                         snippet:
@@ -246,6 +297,7 @@ class _StudentScreenState extends State<StudentScreen>
                         : const LatLng(13.0827, 80.2707),
                     zoom: 15,
                   ),
+
                   onMapCreated: (controller) {
                     _mapController = controller;
                     // Apply dark mode
@@ -311,13 +363,60 @@ class _StudentScreenState extends State<StudentScreen>
                 backgroundColor: const Color(0xFF1E1E1E),
                 onPressed: () async {
                   try {
+                    // Check if location services are enabled
+                    bool serviceEnabled =
+                        await Geolocator.isLocationServiceEnabled();
+                    if (!serviceEnabled) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Location services are disabled'),
+                          ),
+                        );
+                      }
+                      return;
+                    }
+
+                    // Check permissions
+                    LocationPermission permission =
+                        await Geolocator.checkPermission();
+                    if (permission == LocationPermission.denied) {
+                      permission = await Geolocator.requestPermission();
+                      if (permission == LocationPermission.denied) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Location permissions are denied'),
+                            ),
+                          );
+                        }
+                        return;
+                      }
+                    }
+
+                    if (permission == LocationPermission.deniedForever) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'Location permissions are permanently denied. Please enable in settings.',
+                            ),
+                          ),
+                        );
+                      }
+                      return;
+                    }
+
+                    // Permission granted - trigger rebuild to show blue dot
+                    if (mounted) setState(() {});
+
                     // Try last known location first for instant response
                     Position? position =
                         await Geolocator.getLastKnownPosition();
 
-                    // If no cached position, get current with low accuracy for speed
+                    // If no cached position, get current
                     position ??= await Geolocator.getCurrentPosition(
-                      desiredAccuracy: LocationAccuracy.low,
+                      desiredAccuracy: LocationAccuracy.high,
                       timeLimit: const Duration(seconds: 5),
                     );
 
@@ -330,9 +429,7 @@ class _StudentScreenState extends State<StudentScreen>
                   } catch (e) {
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Could not get your location'),
-                        ),
+                        SnackBar(content: Text('Error getting location: $e')),
                       );
                     }
                   }
@@ -506,6 +603,20 @@ class _StudentScreenState extends State<StudentScreen>
         'https://www.google.com/maps/dir/?api=1&destination=${_nearestStop!.lat},${_nearestStop!.lng}&travelmode=walking',
       );
       await launchUrl(webUrl, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  /// Call the driver using phone dialer
+  Future<void> _callDriver(String phoneNumber) async {
+    final uri = Uri.parse('tel:$phoneNumber');
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri);
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open phone dialer')),
+        );
+      }
     }
   }
 
@@ -749,7 +860,7 @@ class _StudentScreenState extends State<StudentScreen>
 
         return StreamBuilder<DocumentSnapshot>(
           stream: FirebaseFirestore.instance
-              .collection('users')
+              .collection('drivers') // Changed from 'users' to 'drivers'
               .doc(driverId)
               .snapshots(),
           builder: (context, driverSnapshot) {
@@ -800,6 +911,28 @@ class _StudentScreenState extends State<StudentScreen>
                     driverData['email'] ?? '',
                     style: const TextStyle(color: Colors.white54),
                   ),
+
+                  // Phone number with call button
+                  if (driverData['phone'] != null &&
+                      driverData['phone'].toString().isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    ElevatedButton.icon(
+                      onPressed: () => _callDriver(driverData['phone']),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 12,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(25),
+                        ),
+                      ),
+                      icon: const Icon(Icons.call),
+                      label: Text('Call ${driverData['phone']}'),
+                    ),
+                  ],
 
                   const SizedBox(height: 30),
 
@@ -1247,17 +1380,26 @@ class _StudentScreenState extends State<StudentScreen>
   }
 
   // ============================================
-  // Bus Selection Screen
+  // Bus Selection Screen (Route First, Then Bus)
   // ============================================
   Widget _buildBusSelectionScreen() {
     final primaryColor = Theme.of(context).primaryColor;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'Select Your Bus',
-          style: TextStyle(color: Colors.white),
+        title: Text(
+          _selectedRouteId == null ? 'Select Your Route' : 'Select Bus',
+          style: const TextStyle(color: Colors.white),
         ),
+        leading: _selectedRouteId != null
+            ? IconButton(
+                icon: const Icon(Icons.arrow_back),
+                onPressed: () => setState(() {
+                  _selectedRouteId = null;
+                  _selectedRouteName = null;
+                }),
+              )
+            : null,
         actions: [
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.white),
@@ -1278,36 +1420,193 @@ class _StudentScreenState extends State<StudentScreen>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Choose Your Bus',
-                style: TextStyle(
-                  fontSize: 26,
-                  fontWeight: FontWeight.bold,
-                  color: primaryColor,
-                ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Select the bus you travel on regularly',
-                style: TextStyle(color: Colors.white70),
+              // Step indicator
+              Row(
+                children: [
+                  _buildStepIndicator(1, 'Route', _selectedRouteId == null),
+                  const Expanded(child: Divider(color: Colors.white24)),
+                  _buildStepIndicator(2, 'Bus', _selectedRouteId != null),
+                ],
               ),
               const SizedBox(height: 24),
 
-              Expanded(
-                child: _availableBuses.isEmpty
-                    ? const Center(child: CircularProgressIndicator())
-                    : ListView.builder(
-                        itemCount: _availableBuses.length,
-                        itemBuilder: (context, index) {
-                          final bus = _availableBuses[index];
-                          return _buildBusCard(bus['id']!, bus['name']!);
-                        },
-                      ),
-              ),
+              if (_selectedRouteId == null) ...[
+                // STEP 1: Route Selection
+                Text(
+                  'Choose Your Route',
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: primaryColor,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Select the route your bus travels on',
+                  style: TextStyle(color: Colors.white70),
+                ),
+                const SizedBox(height: 20),
+                Expanded(
+                  child: _availableRoutes.isEmpty
+                      ? const Center(child: CircularProgressIndicator())
+                      : ListView.builder(
+                          itemCount: _availableRoutes.length,
+                          itemBuilder: (context, index) {
+                            final route = _availableRoutes[index];
+                            return _buildRouteCard(
+                              route['id']!,
+                              route['name']!,
+                            );
+                          },
+                        ),
+                ),
+              ] else ...[
+                // STEP 2: Bus Selection (filtered by route)
+                Text(
+                  'Select Bus on $_selectedRouteName',
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                    color: primaryColor,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Choose the specific bus you travel on',
+                  style: TextStyle(color: Colors.white70),
+                ),
+                const SizedBox(height: 20),
+                Expanded(child: _buildBusListForRoute(_selectedRouteId!)),
+              ],
             ],
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildStepIndicator(int step, String label, bool isActive) {
+    final primaryColor = Theme.of(context).primaryColor;
+    return Column(
+      children: [
+        Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            color: isActive ? primaryColor : Colors.grey[800],
+            shape: BoxShape.circle,
+          ),
+          child: Center(
+            child: Text(
+              '$step',
+              style: TextStyle(
+                color: isActive ? Colors.black : Colors.white54,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: TextStyle(
+            color: isActive ? primaryColor : Colors.white54,
+            fontSize: 12,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRouteCard(String id, String name) {
+    final primaryColor = Theme.of(context).primaryColor;
+    return GestureDetector(
+      onTap: () => setState(() {
+        _selectedRouteId = id;
+        _selectedRouteName = name;
+      }),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E1E1E),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.white12),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 50,
+              height: 50,
+              decoration: BoxDecoration(
+                color: primaryColor.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(Icons.route, color: primaryColor, size: 28),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Text(
+                name,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+            Icon(Icons.arrow_forward_ios, color: primaryColor, size: 18),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBusListForRoute(String routeId) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('buses')
+          .where('routeId', isEqualTo: routeId)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        final buses = snapshot.data!.docs;
+        if (buses.isEmpty) {
+          return Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.bus_alert, size: 60, color: Colors.white38),
+                const SizedBox(height: 16),
+                const Text(
+                  'No buses on this route',
+                  style: TextStyle(color: Colors.white54),
+                ),
+                const SizedBox(height: 8),
+                TextButton(
+                  onPressed: () => setState(() {
+                    _selectedRouteId = null;
+                    _selectedRouteName = null;
+                  }),
+                  child: const Text('Select Different Route'),
+                ),
+              ],
+            ),
+          );
+        }
+
+        return ListView.builder(
+          itemCount: buses.length,
+          itemBuilder: (context, index) {
+            final bus = buses[index];
+            final busData = bus.data() as Map<String, dynamic>;
+            return _buildBusCard(bus.id, busData['name'] ?? 'Unknown Bus');
+          },
+        );
+      },
     );
   }
 

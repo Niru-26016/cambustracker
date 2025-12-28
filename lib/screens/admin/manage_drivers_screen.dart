@@ -168,7 +168,16 @@ class _ManageDriversScreenState extends State<ManageDriversScreen> {
 
   void _showAssignBusDialog(Driver driver) async {
     final buses = await _firestoreService.getAvailableBuses();
+    final allDrivers = await _firestoreService.getDrivers();
     if (!mounted) return;
+
+    // Build map of busId -> assigned driver name
+    final Map<String, String> busDriverMap = {};
+    for (final d in allDrivers) {
+      if (d.assignedBusId != null && d.driverId != driver.driverId) {
+        busDriverMap[d.assignedBusId!] = d.name;
+      }
+    }
 
     showDialog(
       context: context,
@@ -190,16 +199,69 @@ class _ManageDriversScreenState extends State<ManageDriversScreen> {
                   itemCount: buses.length,
                   itemBuilder: (context, index) {
                     final bus = buses[index];
+                    final existingDriver = busDriverMap[bus['id']];
+                    final isAssigned = existingDriver != null;
+
                     return ListTile(
                       leading: Icon(
                         Icons.directions_bus,
-                        color: Theme.of(context).primaryColor,
+                        color: isAssigned
+                            ? Colors.orange
+                            : Theme.of(context).primaryColor,
                       ),
                       title: Text(
                         bus['name'] ?? 'Unknown',
                         style: const TextStyle(color: Colors.white),
                       ),
+                      subtitle: isAssigned
+                          ? Text(
+                              'Currently: $existingDriver',
+                              style: const TextStyle(
+                                color: Colors.orange,
+                                fontSize: 12,
+                              ),
+                            )
+                          : null,
+                      trailing: isAssigned
+                          ? const Icon(
+                              Icons.warning,
+                              color: Colors.orange,
+                              size: 20,
+                            )
+                          : null,
                       onTap: () async {
+                        if (isAssigned) {
+                          // Show confirmation dialog
+                          final confirm = await showDialog<bool>(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                              backgroundColor: const Color(0xFF1E1E1E),
+                              title: const Text(
+                                'Bus Already Assigned',
+                                style: TextStyle(color: Colors.white),
+                              ),
+                              content: Text(
+                                'This bus is currently assigned to $existingDriver.\n\nDo you want to reassign it to ${driver.name}?',
+                                style: const TextStyle(color: Colors.white70),
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, false),
+                                  child: const Text('Cancel'),
+                                ),
+                                ElevatedButton(
+                                  onPressed: () => Navigator.pop(ctx, true),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.orange,
+                                  ),
+                                  child: const Text('Reassign'),
+                                ),
+                              ],
+                            ),
+                          );
+                          if (confirm != true) return;
+                        }
+
                         await _firestoreService.assignDriverToBus(
                           driverId: driver.driverId,
                           busId: bus['id']!,
@@ -233,6 +295,7 @@ class _ManageDriversScreenState extends State<ManageDriversScreen> {
   void _showAddDriverDialog() {
     final nameController = TextEditingController();
     final phoneController = TextEditingController();
+    final emailController = TextEditingController();
 
     showDialog(
       context: context,
@@ -242,34 +305,58 @@ class _ManageDriversScreenState extends State<ManageDriversScreen> {
           'Add New Driver',
           style: TextStyle(color: Colors.white),
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                labelText: 'Driver Name',
-                hintText: 'e.g., John Doe',
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  labelText: 'Driver Name *',
+                  hintText: 'e.g., John Doe',
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: phoneController,
-              style: const TextStyle(color: Colors.white),
-              keyboardType: TextInputType.number,
-              maxLength: 10,
-              inputFormatters: [
-                FilteringTextInputFormatter.digitsOnly,
-                LengthLimitingTextInputFormatter(10),
-              ],
-              decoration: const InputDecoration(
-                labelText: 'Phone Number',
-                hintText: 'e.g., 9876543210',
-                counterStyle: TextStyle(color: Colors.white54),
+              const SizedBox(height: 12),
+              TextField(
+                controller: emailController,
+                style: const TextStyle(color: Colors.white),
+                keyboardType: TextInputType.emailAddress,
+                decoration: const InputDecoration(
+                  labelText: 'Email (for Google Sign-In)',
+                  hintText: 'e.g., driver@gmail.com',
+                ),
               ),
-            ),
-          ],
+              const SizedBox(height: 12),
+              TextField(
+                controller: phoneController,
+                style: const TextStyle(color: Colors.white),
+                keyboardType: TextInputType.number,
+                maxLength: 10,
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(10),
+                ],
+                decoration: const InputDecoration(
+                  labelText: 'Phone (for OTP login)',
+                  hintText: 'e.g., 9876543210',
+                  counterStyle: TextStyle(color: Colors.white54),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Text(
+                  'Driver will login using email OR phone in the Driver App',
+                  style: TextStyle(color: Colors.orange, fontSize: 12),
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -278,21 +365,38 @@ class _ManageDriversScreenState extends State<ManageDriversScreen> {
           ),
           ElevatedButton(
             onPressed: () async {
-              if (nameController.text.isNotEmpty) {
-                final driver = Driver(
-                  driverId: '',
-                  userId: '',
-                  name: nameController.text,
-                  email: '',
-                  phone: phoneController.text.isEmpty
-                      ? null
-                      : phoneController.text,
-                  isActive: true,
-                  createdAt: DateTime.now(),
+              // Require name and at least email OR phone
+              if (nameController.text.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Name is required')),
                 );
-                await _firestoreService.saveDriver(driver);
-                if (context.mounted) Navigator.pop(context);
+                return;
               }
+              if (emailController.text.isEmpty &&
+                  phoneController.text.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'Email or Phone is required for driver login',
+                    ),
+                  ),
+                );
+                return;
+              }
+
+              final driver = Driver(
+                driverId: '',
+                userId: '',
+                name: nameController.text,
+                email: emailController.text.trim(),
+                phone: phoneController.text.isEmpty
+                    ? null
+                    : phoneController.text,
+                isActive: true,
+                createdAt: DateTime.now(),
+              );
+              await _firestoreService.saveDriver(driver);
+              if (context.mounted) Navigator.pop(context);
             },
             child: const Text('Add'),
           ),

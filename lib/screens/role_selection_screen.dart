@@ -1,11 +1,8 @@
 import 'package:flutter/material.dart';
 import '../services/auth_service.dart';
-import '../services/firestore_service.dart';
-import 'student_screen.dart';
-import 'driver_screen.dart';
 
-/// RoleSelectionScreen - First-time user role selection.
-/// Driver or Passenger role with appropriate options.
+/// RoleSelectionScreen - For Google Sign-In users to select their role.
+/// Note: Main app only supports Passenger role. Drivers use separate app.
 class RoleSelectionScreen extends StatefulWidget {
   const RoleSelectionScreen({super.key});
 
@@ -15,55 +12,19 @@ class RoleSelectionScreen extends StatefulWidget {
 
 class _RoleSelectionScreenState extends State<RoleSelectionScreen> {
   final AuthService _authService = AuthService();
-  final FirestoreService _firestoreService = FirestoreService();
-
   bool _isLoading = false;
-  String? _selectedRole;
-  String? _selectedBusId;
-  List<Map<String, String>> _availableBuses = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _loadBuses();
-  }
-
-  Future<void> _loadBuses() async {
-    final buses = await _firestoreService.getAvailableBuses();
-    setState(() => _availableBuses = buses);
-  }
 
   Future<void> _saveRole() async {
-    if (_selectedRole == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Please select a role')));
-      return;
-    }
-
-    // Validate bus selection for driver
-    if (_selectedRole == 'driver' && _selectedBusId == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Please select a bus')));
-      return;
-    }
-
+    // Main app only supports Passenger (student) role
+    // Driver role should use CambusTracker Driver app
     setState(() => _isLoading = true);
 
     try {
-      await _authService.updateUserRole(_selectedRole!, busId: _selectedBusId);
+      await _authService.updateUserRole('student');
 
-      // Navigate directly to appropriate screen
+      // Navigate back to root - StreamBuilder will route to correct screen
       if (mounted) {
-        Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(
-            builder: (_) => _selectedRole == 'driver'
-                ? const DriverScreen()
-                : const StudentScreen(),
-          ),
-          (route) => false,
-        );
+        Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
       }
     } catch (e) {
       if (mounted) {
@@ -124,67 +85,36 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> {
               ),
               const SizedBox(height: 30),
 
-              // Role Selection Cards (only Passenger and Driver)
+              // Role Selection Cards - Only Passenger in main app
+              // Drivers should use CambusTracker Driver app
               _buildRoleCard(
-                role: 'passenger',
+                role: 'student',
                 icon: Icons.person,
                 title: 'Passenger',
                 description: 'Track campus buses on the map in real-time',
-                isSelected: _selectedRole == 'passenger',
+                isSelected: true, // Always selected, only option
               ),
-              const SizedBox(height: 12),
-              _buildRoleCard(
-                role: 'driver',
-                icon: Icons.drive_eta,
-                title: 'Driver',
-                description: 'Share your bus location with passengers',
-                isSelected: _selectedRole == 'driver',
-              ),
-
-              // Bus Selection (for drivers)
-              if (_selectedRole == 'driver') ...[
-                const SizedBox(height: 24),
-                Text(
-                  'Select Your Bus',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                    color: primaryColor,
-                  ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.orange.withOpacity(0.3)),
                 ),
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1E1E1E),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: primaryColor.withOpacity(0.3)),
-                  ),
-                  child: DropdownButtonHideUnderline(
-                    child: DropdownButton<String>(
-                      value: _selectedBusId,
-                      isExpanded: true,
-                      hint: const Text(
-                        'Choose a bus',
-                        style: TextStyle(color: Colors.white70),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline, color: Colors.orange),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Text(
+                        'Drivers should use the CambusTracker Driver app',
+                        style: TextStyle(color: Colors.white70, fontSize: 13),
                       ),
-                      dropdownColor: const Color(0xFF1E1E1E),
-                      icon: Icon(Icons.arrow_drop_down, color: primaryColor),
-                      items: _availableBuses.map((bus) {
-                        return DropdownMenuItem<String>(
-                          value: bus['id'],
-                          child: Text(
-                            bus['name']!,
-                            style: const TextStyle(color: Colors.white),
-                          ),
-                        );
-                      }).toList(),
-                      onChanged: (value) =>
-                          setState(() => _selectedBusId = value),
                     ),
-                  ),
+                  ],
                 ),
-              ],
+              ),
 
               const SizedBox(height: 40),
 
@@ -237,66 +167,58 @@ class _RoleSelectionScreenState extends State<RoleSelectionScreen> {
   }) {
     final primaryColor = Theme.of(context).primaryColor;
 
-    return GestureDetector(
-      onTap: () {
-        setState(() {
-          _selectedRole = role;
-          if (role != 'driver') _selectedBusId = null;
-        });
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isSelected
-              ? primaryColor.withOpacity(0.1)
-              : const Color(0xFF1E1E1E),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: isSelected ? primaryColor : Colors.white12,
-            width: isSelected ? 2 : 1,
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: isSelected
+            ? primaryColor.withOpacity(0.1)
+            : const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isSelected ? primaryColor : Colors.white12,
+          width: isSelected ? 2 : 1,
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 50,
+            height: 50,
+            decoration: BoxDecoration(
+              color: isSelected ? primaryColor : Colors.white10,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(
+              icon,
+              size: 28,
+              color: isSelected ? Colors.black : primaryColor,
+            ),
           ),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 50,
-              height: 50,
-              decoration: BoxDecoration(
-                color: isSelected ? primaryColor : Colors.white10,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(
-                icon,
-                size: 28,
-                color: isSelected ? Colors.black : primaryColor,
-              ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: isSelected ? primaryColor : Colors.white,
-                    ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: isSelected ? primaryColor : Colors.white,
                   ),
-                  const SizedBox(height: 2),
-                  Text(
-                    description,
-                    style: const TextStyle(fontSize: 13, color: Colors.white70),
-                  ),
-                ],
-              ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  description,
+                  style: const TextStyle(fontSize: 13, color: Colors.white70),
+                ),
+              ],
             ),
-            if (isSelected)
-              Icon(Icons.check_circle, color: primaryColor, size: 24),
-          ],
-        ),
+          ),
+          if (isSelected)
+            Icon(Icons.check_circle, color: primaryColor, size: 24),
+        ],
       ),
     );
   }

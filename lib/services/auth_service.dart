@@ -58,7 +58,7 @@ class AuthService {
           await _firestore.collection('users').doc(user.uid).set({
             'name': user.displayName ?? '',
             'email': user.email ?? '',
-            'role': '', // Empty role - will be set in role selection
+            'role': 'student', // Default to passenger/student
             'busId': null,
             'createdAt': FieldValue.serverTimestamp(),
           });

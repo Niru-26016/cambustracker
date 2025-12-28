@@ -2,13 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../services/auth_service.dart';
 import 'login_screen.dart';
-import 'role_selection_screen.dart';
-import 'driver_screen.dart';
+
 import 'student_screen.dart';
 import 'admin/admin_dashboard.dart';
 
 /// SplashScreen - Initial screen that handles auth state and routing.
 /// Uses StreamBuilder for real-time auth updates.
+/// Note: Driver features have been moved to CambusTracker Driver app.
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
 
@@ -56,9 +56,9 @@ class _SplashScreenState extends State<SplashScreen> {
           return const LoginScreen();
         }
 
-        // User is logged in - check their role
-        return FutureBuilder(
-          future: _authService.getCurrentUserProfile(),
+        // User is logged in - check their role using StreamBuilder for real-time updates
+        return StreamBuilder(
+          stream: _authService.streamCurrentUser(),
           builder: (context, userSnapshot) {
             if (userSnapshot.connectionState == ConnectionState.waiting) {
               return _buildSplashContent();
@@ -66,20 +66,64 @@ class _SplashScreenState extends State<SplashScreen> {
 
             final appUser = userSnapshot.data;
 
+            // If no user profile yet or role is empty, default to student directly
             if (appUser == null || appUser.role.isEmpty) {
-              return const RoleSelectionScreen();
+              return const StudentScreen();
             }
 
             if (appUser.isAdmin) {
               return const AdminDashboard();
             } else if (appUser.isDriver) {
-              return const DriverScreen();
+              // Driver features moved to separate app
+              return _buildDriverBlockedScreen();
             } else {
               return const StudentScreen();
             }
           },
         );
       },
+    );
+  }
+
+  /// Screen shown to drivers - they should use the separate Driver app
+  Widget _buildDriverBlockedScreen() {
+    final primaryColor = Theme.of(context).primaryColor;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.directions_bus, size: 80, color: primaryColor),
+              const SizedBox(height: 24),
+              Text(
+                'Driver Account Detected',
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: primaryColor,
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Please use the CambusTracker Driver app for driver features.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white70, fontSize: 16),
+              ),
+              const SizedBox(height: 32),
+              ElevatedButton.icon(
+                onPressed: () async {
+                  await _authService.signOut();
+                },
+                icon: const Icon(Icons.logout),
+                label: const Text('Sign Out'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 

@@ -21,7 +21,8 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isRegistering = true; // Default to registration form
   bool _obscurePassword = true;
   String? _errorMessage;
-  String _selectedRole = 'student'; // Default role
+  // Note: Removed role selection - main app only supports Passenger
+  // Drivers should use CambusTracker Driver app
 
   @override
   void dispose() {
@@ -69,7 +70,7 @@ class _LoginScreenState extends State<LoginScreen> {
           _emailController.text.trim(),
           _passwordController.text,
           _nameController.text.trim(),
-          role: _selectedRole, // Pass selected role
+          role: 'student', // Main app only supports Passenger
         );
       } else {
         await _authService.signInWithEmail(
@@ -326,41 +327,6 @@ class _LoginScreenState extends State<LoginScreen> {
                       },
                     ),
 
-                    // Role selection (only for registration)
-                    if (_isRegistering) ...[
-                      const SizedBox(height: 20),
-                      Text(
-                        'I am a:',
-                        style: TextStyle(
-                          color: primaryColor,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 15,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildRoleOption(
-                              'student',
-                              'Passenger',
-                              Icons.person,
-                              primaryColor,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: _buildRoleOption(
-                              'driver',
-                              'Driver',
-                              Icons.drive_eta,
-                              primaryColor,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-
                     // Forgot password (only for login)
                     if (!_isRegistering)
                       Align(
@@ -493,43 +459,6 @@ class _LoginScreenState extends State<LoginScreen> {
       ),
     );
   }
-
-  Widget _buildRoleOption(
-    String value,
-    String label,
-    IconData icon,
-    Color color,
-  ) {
-    final isSelected = _selectedRole == value;
-    return InkWell(
-      onTap: () => setState(() => _selectedRole = value),
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 14),
-        decoration: BoxDecoration(
-          color: isSelected ? color.withOpacity(0.15) : const Color(0xFF1E1E1E),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isSelected ? color : Colors.white24,
-            width: isSelected ? 2 : 1,
-          ),
-        ),
-        child: Column(
-          children: [
-            Icon(icon, color: isSelected ? color : Colors.white54, size: 28),
-            const SizedBox(height: 6),
-            Text(
-              label,
-              style: TextStyle(
-                color: isSelected ? color : Colors.white70,
-                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }
 
 /// Admin Login Screen - Separate login for administrators.
@@ -586,7 +515,10 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
             });
           }
         }
-        // If admin, navigation handled by auth stream
+        // If admin, navigate to root to let SplashScreen route to AdminDashboard
+        if (mounted) {
+          Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
+        }
       }
     } catch (e) {
       if (mounted) {
