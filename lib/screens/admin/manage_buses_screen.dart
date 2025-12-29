@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import '../../services/firestore_service.dart';
 import '../../models/bus_location.dart';
 import '../../models/route_model.dart';
+import '../../models/driver_model.dart';
+import 'bulk_import_screen.dart';
 
 /// Manage Buses Screen - CRUD operations for buses
 class ManageBusesScreen extends StatefulWidget {
@@ -14,6 +16,7 @@ class ManageBusesScreen extends StatefulWidget {
 class _ManageBusesScreenState extends State<ManageBusesScreen> {
   final FirestoreService _firestoreService = FirestoreService();
   final Map<String, String> _routeNameCache = {};
+  final Map<String, String> _driverNameCache = {};
 
   Future<String> _getRouteName(String routeId) async {
     if (_routeNameCache.containsKey(routeId)) {
@@ -26,6 +29,19 @@ class _ManageBusesScreenState extends State<ManageBusesScreen> {
     return name;
   }
 
+  Future<String?> _getDriverForBus(String busId) async {
+    if (_driverNameCache.containsKey(busId)) {
+      return _driverNameCache[busId];
+    }
+    final drivers = await _firestoreService.getDrivers();
+    final driver = drivers.where((d) => d.assignedBusId == busId).firstOrNull;
+    if (driver != null) {
+      _driverNameCache[busId] = driver.name;
+      return driver.name;
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final primaryColor = Theme.of(context).primaryColor;
@@ -34,6 +50,21 @@ class _ManageBusesScreenState extends State<ManageBusesScreen> {
         title: const Text('Manage Buses'),
         backgroundColor: Colors.transparent,
         foregroundColor: primaryColor,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.upload_file),
+            tooltip: 'Bulk Import',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) =>
+                      const BulkImportScreen(importType: ImportType.buses),
+                ),
+              );
+            },
+          ),
+        ],
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () => _showAddBusDialog(),
@@ -138,6 +169,30 @@ class _ManageBusesScreenState extends State<ManageBusesScreen> {
                   );
                 },
               ),
+            FutureBuilder<String?>(
+              future: _getDriverForBus(bus.busId),
+              builder: (context, snapshot) {
+                if (snapshot.hasData && snapshot.data != null) {
+                  return Row(
+                    children: [
+                      const Icon(Icons.person, size: 14, color: Colors.blue),
+                      const SizedBox(width: 4),
+                      Text(
+                        snapshot.data!,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.blue,
+                        ),
+                      ),
+                    ],
+                  );
+                }
+                return const Text(
+                  'No driver assigned',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
+                );
+              },
+            ),
           ],
         ),
         trailing: PopupMenuButton<String>(

@@ -70,11 +70,30 @@ class DirectionService {
           'distance': leg['distance']['text'],
           'distanceMeters': leg['distance']['value'],
           'duration': leg['duration']['text'],
+          'durationSeconds': leg['duration']['value'],
         };
       }
     } catch (_) {}
 
-    return {'distance': 'Unknown', 'distanceMeters': 0, 'duration': 'Unknown'};
+    return {
+      'distance': 'Unknown',
+      'distanceMeters': 0,
+      'duration': 'Unknown',
+      'durationSeconds': 0,
+    };
+  }
+
+  /// Get walking duration in minutes (for ETA calculations)
+  Future<int?> getWalkingDurationMinutes(
+    LatLng origin,
+    LatLng destination,
+  ) async {
+    final info = await getDistanceInfo(origin, destination);
+    final seconds = info['durationSeconds'] as int?;
+    if (seconds != null && seconds > 0) {
+      return (seconds / 60).ceil();
+    }
+    return null;
   }
 
   /// Decode Google's encoded polyline to list of LatLng points

@@ -32,11 +32,29 @@ dependencies:
   cupertino_icons: ^1.0.8
   url_launcher: ^6.3.2
   http: ^1.6.0
+  
+  # Bulk Import
+  file_picker: ^8.0.0
+  excel: ^4.0.2
+  csv: ^5.1.1
+  path_provider: ^2.1.2
+  audioplayers: ^6.5.1
+  flutter_ringtone_player: ^4.0.0+4
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.3
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icons/cambustracker.png"
+  min_sdk_android: 21
+  remove_alpha_ios: true
+  adaptive_icon_background: "#ffffff"
+  adaptive_icon_foreground: "assets/icons/cambustracker.png"
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

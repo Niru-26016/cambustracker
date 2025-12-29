@@ -3,6 +3,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 import 'screens/splash_screen.dart';
 import 'services/foreground_task_service.dart';
+import 'services/background_alarm_service.dart' show NotificationAlarmService;
 
 /// Main entry point for CambusTracker app.
 /// Initializes Firebase and foreground task before running the app.
@@ -21,6 +22,9 @@ void main() async {
 
   // Initialize foreground task for background location tracking
   ForegroundTaskService.init();
+
+  // Initialize background alarm service
+  await NotificationAlarmService.initialize();
 
   runApp(const CambusTrackerApp());
 }

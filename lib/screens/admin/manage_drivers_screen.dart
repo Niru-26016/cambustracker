@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../services/firestore_service.dart';
 import '../../models/driver_model.dart';
+import 'bulk_import_screen.dart';
 
 /// Manage Drivers Screen - CRUD operations for drivers
 class ManageDriversScreen extends StatefulWidget {
@@ -34,6 +35,21 @@ class _ManageDriversScreenState extends State<ManageDriversScreen> {
         title: const Text('Manage Drivers'),
         backgroundColor: Colors.transparent,
         foregroundColor: primaryColor,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.upload_file),
+            tooltip: 'Bulk Import',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) =>
+                      const BulkImportScreen(importType: ImportType.drivers),
+                ),
+              );
+            },
+          ),
+        ],
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () => _showAddDriverDialog(),

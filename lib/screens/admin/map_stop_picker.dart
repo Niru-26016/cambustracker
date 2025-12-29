@@ -207,13 +207,21 @@ class _MapStopPickerState extends State<MapStopPicker> {
                       ),
                     ),
                     Flexible(
-                      child: ListView.builder(
+                      child: ReorderableListView.builder(
                         shrinkWrap: true,
                         padding: const EdgeInsets.symmetric(horizontal: 12),
                         itemCount: _stops.length,
+                        onReorder: (oldIndex, newIndex) {
+                          setState(() {
+                            if (newIndex > oldIndex) newIndex--;
+                            final item = _stops.removeAt(oldIndex);
+                            _stops.insert(newIndex, item);
+                          });
+                        },
                         itemBuilder: (context, index) {
                           final stop = _stops[index];
                           return ListTile(
+                            key: ValueKey('stop_$index'),
                             dense: true,
                             leading: CircleAvatar(
                               radius: 14,
@@ -231,10 +239,22 @@ class _MapStopPickerState extends State<MapStopPicker> {
                               stop['name'] as String,
                               style: const TextStyle(color: Colors.white),
                             ),
-                            trailing: IconButton(
-                              icon: const Icon(Icons.delete, size: 20),
-                              color: Colors.red,
-                              onPressed: () => _removeStop(index),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                ReorderableDragStartListener(
+                                  index: index,
+                                  child: Icon(
+                                    Icons.drag_handle,
+                                    color: Colors.white54,
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete, size: 20),
+                                  color: Colors.red,
+                                  onPressed: () => _removeStop(index),
+                                ),
+                              ],
                             ),
                           );
                         },

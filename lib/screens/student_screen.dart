@@ -10,6 +10,11 @@ import '../services/firestore_service.dart';
 import '../services/direction_service.dart';
 import '../models/bus_location.dart';
 import '../models/route_model.dart';
+import '../models/catch_status.dart';
+import '../services/alarm_service.dart';
+import '../services/background_alarm_service.dart'
+    show NotificationAlarmService;
+import 'package:flutter/services.dart' show HapticFeedback;
 
 /// StudentScreen (Passenger) - Tabbed interface for passengers.
 /// 4 Tabs: Live Location, Driver Details, Lost Items, Arrival Alarm
@@ -45,6 +50,14 @@ class _StudentScreenState extends State<StudentScreen>
   String? _durationText;
   bool _showingNavigation = false;
 
+  // Alarm state (local, not Firestore)
+  final AlarmService _alarmService = AlarmService();
+  bool _alarmEnabled = false;
+  int _alarmDistance = 500;
+  Map<String, dynamic>? _selectedAlarmStop;
+  bool _alarmTriggered = false;
+  DateTime? _alarmTriggeredAt;
+
   // Custom bus marker
   BitmapDescriptor? _busMarkerIcon;
 
@@ -56,6 +69,16 @@ class _StudentScreenState extends State<StudentScreen>
     _loadAvailableRoutes();
     _loadAvailableBuses();
     _loadUserBusSelection();
+    _loadAlarmSettings();
+  }
+
+  Future<void> _loadAlarmSettings() async {
+    _alarmEnabled = await _alarmService.isAlarmEnabled();
+    _alarmDistance = await _alarmService.getAlertDistance();
+    _selectedAlarmStop = await _alarmService.getSelectedStop();
+    _alarmTriggered = await _alarmService.wasAlarmTriggered();
+    _alarmTriggeredAt = await _alarmService.getTriggeredTime();
+    if (mounted) setState(() {});
   }
 
   Future<void> _createBusDotMarker() async {
@@ -747,6 +770,9 @@ class _StudentScreenState extends State<StudentScreen>
           );
         }
 
+        // Update tracked bus for map
+        _trackedBus = bus;
+
         return Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
@@ -776,7 +802,7 @@ class _StudentScreenState extends State<StudentScreen>
               ),
               const SizedBox(width: 16),
 
-              // Info
+              // Info with ETA
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -791,13 +817,8 @@ class _StudentScreenState extends State<StudentScreen>
                       ),
                     ),
                     const SizedBox(height: 4),
-                    Text(
-                      '${bus.speedKmh.toStringAsFixed(1)} km/h • ${bus.lastUpdateFormatted}',
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 13,
-                      ),
-                    ),
+                    // ETA to next stop
+                    _buildEtaInfo(bus),
                   ],
                 ),
               ),
@@ -827,6 +848,380 @@ class _StudentScreenState extends State<StudentScreen>
           ),
         );
       },
+    );
+  }
+
+  Widget _buildEtaInfo(BusLocation bus) {
+    if (bus.routeId == null) {
+      return Text(
+        '${bus.lastUpdateFormatted}',
+        style: const TextStyle(color: Colors.white70, fontSize: 13),
+      );
+    }
+
+    return StreamBuilder<List<BusRoute>>(
+      stream: _firestoreService.streamRoutes(),
+      builder: (context, routeSnapshot) {
+        final routes = routeSnapshot.data ?? [];
+        final route = routes.where((r) => r.routeId == bus.routeId).firstOrNull;
+
+        if (route == null || route.stops.isEmpty) {
+          return Text(
+            '${bus.lastUpdateFormatted}',
+            style: const TextStyle(color: Colors.white70, fontSize: 13),
+          );
+        }
+
+        /* 
+        // Find nearest stop AHEAD of bus
+        // We use bearing to determine if a stop is behind us
+        RouteStop? nextStop;
+        double minDistance = double.infinity;
+
+        for (final stop in route.stops) {
+          final distance = Geolocator.distanceBetween(
+            bus.lat,
+            bus.lng,
+            stop.lat,
+            stop.lng,
+          );
+
+          // Skip if very close (at stop)
+          if (distance < 30) continue;
+
+          // Check direction if bus is moving (speed > 1 m/s)
+          // If stopped, we rely purely on distance
+          bool isAhead = true;
+          if (bus.speed > 1) {
+            final bearingToStop = Geolocator.bearingBetween(
+              bus.lat,
+              bus.lng,
+              stop.lat,
+              stop.lng,
+            );
+
+            // Normalize angle difference to 0-180
+            double diff = (bus.bearing - bearingToStop).abs();
+            if (diff > 180) diff = 360 - diff;
+
+            // If angle > 100 degrees, it's likely behind or passed
+            if (diff > 100) isAhead = false;
+          }
+
+          if (isAhead && distance < minDistance) {
+            minDistance = distance;
+            nextStop = stop;
+          }
+        }
+
+        if (nextStop == null) {
+          // If no stop found ahead, fallback to absolute nearest
+          for (final stop in route.stops) {
+            final distance = Geolocator.distanceBetween(
+              bus.lat,
+              bus.lng,
+              stop.lat,
+              stop.lng,
+            );
+            if (distance < minDistance) {
+              minDistance = distance;
+              nextStop = stop;
+            }
+          }
+        }
+
+        if (nextStop == null) {
+          return Text(
+            'At stop • ${bus.lastUpdateFormatted}',
+            style: const TextStyle(color: Colors.white70, fontSize: 13),
+          );
+        }
+
+        // Calculate ETA based on average bus speed (25 km/h in city)
+        final avgSpeedMps = bus.speed > 2 ? bus.speed : 6.9; // ~25 km/h default
+        final etaSeconds = minDistance / avgSpeedMps;
+        final etaMinutes = (etaSeconds / 60).ceil();
+
+        String etaText;
+        if (etaMinutes < 1) {
+          etaText = 'Arriving now';
+        } else if (etaMinutes == 1) {
+          etaText = '~1 min to ${nextStop.name}';
+        } else if (etaMinutes < 60) {
+          etaText = '~$etaMinutes min to ${nextStop.name}';
+        } else {
+          final hours = etaMinutes ~/ 60;
+          final mins = etaMinutes % 60;
+          etaText = '~${hours}h ${mins}m to ${nextStop.name}';
+        }
+
+        return Row(
+          children: [
+            const Icon(Icons.access_time, size: 14, color: Colors.orange),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(
+                etaText,
+                style: const TextStyle(color: Colors.orange, fontSize: 13),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        );
+        */
+
+        // Try to get user location to show ETA to THEIR stop
+        return FutureBuilder<Position?>(
+          future: Geolocator.getLastKnownPosition(),
+          builder: (context, userPosSnapshot) {
+            final userPos = userPosSnapshot.data;
+            if (userPos != null) {
+              return _buildUserToStopEta(bus, route, userPos);
+            }
+            return _buildBusNextStopEta(bus, route);
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildUserToStopEta(
+    BusLocation bus,
+    BusRoute route,
+    Position userPos,
+  ) {
+    // 1. Find User's nearest stop
+    RouteStop? userStop;
+    double minUserDist = double.infinity;
+
+    for (final stop in route.stops) {
+      final d = Geolocator.distanceBetween(
+        userPos.latitude,
+        userPos.longitude,
+        stop.lat,
+        stop.lng,
+      );
+      if (d < minUserDist) {
+        minUserDist = d;
+        userStop = stop;
+      }
+    }
+
+    if (userStop == null) {
+      return _buildBusNextStopEta(bus, route); // Fallback
+    }
+
+    // 2. Calculate Bus ETA to User's Stop (simple distance/speed)
+    final busToStopDist = Geolocator.distanceBetween(
+      bus.lat,
+      bus.lng,
+      userStop.lat,
+      userStop.lng,
+    );
+
+    // Check if bus has passed (bearing check)
+    bool busPassed = false;
+    if (bus.speed > 1 && busToStopDist > 50) {
+      final bearingToStop = Geolocator.bearingBetween(
+        bus.lat,
+        bus.lng,
+        userStop.lat,
+        userStop.lng,
+      );
+      double diff = (bus.bearing - bearingToStop).abs();
+      if (diff > 180) diff = 360 - diff;
+      if (diff > 100) busPassed = true;
+    }
+
+    // If bus already passed or < 50m away (at stop)
+    if (busPassed || busToStopDist < 50) {
+      return _buildCatchStatusWidget(
+        status: CatchStatus.missed,
+        userStop: userStop,
+        userEtaMinutes: null,
+        busEtaMinutes: 0,
+        busPassed: busPassed,
+      );
+    }
+
+    // Calculate Bus ETA (using speed or default 25km/h)
+    final avgSpeedMps = bus.speed > 2 ? bus.speed : 6.9; // ~25 km/h default
+    final busEtaMinutes = (busToStopDist / avgSpeedMps / 60).ceil();
+
+    // 3. Calculate User ETA to Stop (using walking speed ~5 km/h = 1.4 m/s)
+    // We use simple calculation here to avoid API calls in hot path
+    // API call only happens when user presses "Navigate" button
+    const walkingSpeedMps = 1.4; // ~5 km/h walking speed
+    final userEtaMinutes = (minUserDist / walkingSpeedMps / 60).ceil();
+
+    // 4. Determine Catch Status
+    const bufferMinutes = 2;
+    CatchStatus status;
+
+    if (busEtaMinutes + bufferMinutes < userEtaMinutes) {
+      status = CatchStatus.missed;
+    } else if (userEtaMinutes < busEtaMinutes) {
+      status = CatchStatus.canCatch;
+    } else {
+      status = CatchStatus.hurry;
+    }
+
+    return _buildCatchStatusWidget(
+      status: status,
+      userStop: userStop,
+      userEtaMinutes: userEtaMinutes,
+      busEtaMinutes: busEtaMinutes,
+      busPassed: false,
+    );
+  }
+
+  Widget _buildCatchStatusWidget({
+    required CatchStatus status,
+    required RouteStop userStop,
+    required int? userEtaMinutes,
+    required int busEtaMinutes,
+    required bool busPassed,
+  }) {
+    Color statusColor;
+    IconData statusIcon;
+
+    switch (status) {
+      case CatchStatus.canCatch:
+        statusColor = Colors.green;
+        statusIcon = Icons.check_circle;
+        break;
+      case CatchStatus.hurry:
+        statusColor = Colors.orange;
+        statusIcon = Icons.warning_amber_rounded;
+        break;
+      case CatchStatus.missed:
+        statusColor = Colors.red;
+        statusIcon = Icons.cancel;
+        break;
+      case CatchStatus.unknown:
+        statusColor = Colors.grey;
+        statusIcon = Icons.help_outline;
+        break;
+    }
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Status row
+        Row(
+          children: [
+            Icon(statusIcon, size: 14, color: statusColor),
+            const SizedBox(width: 4),
+            Expanded(
+              child: Text(
+                status.message,
+                style: TextStyle(
+                  color: statusColor,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
+        // ETA details
+        if (!busPassed && userEtaMinutes != null)
+          Text(
+            'You: ${userEtaMinutes}m • Bus: ${busEtaMinutes}m • ${userStop.name}',
+            style: const TextStyle(color: Colors.white54, fontSize: 11),
+            overflow: TextOverflow.ellipsis,
+          )
+        else
+          Text(
+            'Bus passed ${userStop.name}',
+            style: const TextStyle(color: Colors.white54, fontSize: 11),
+            overflow: TextOverflow.ellipsis,
+          ),
+      ],
+    );
+  }
+
+  Widget _buildBusNextStopEta(BusLocation bus, BusRoute route) {
+    RouteStop? nextStop;
+    double minDistance = double.infinity;
+
+    for (final stop in route.stops) {
+      final distance = Geolocator.distanceBetween(
+        bus.lat,
+        bus.lng,
+        stop.lat,
+        stop.lng,
+      );
+
+      // Skip if very close (at stop)
+      if (distance < 30) continue;
+
+      // Check direction if bus is moving (speed > 1 m/s)
+      bool isAhead = true;
+      if (bus.speed > 1) {
+        final bearingToStop = Geolocator.bearingBetween(
+          bus.lat,
+          bus.lng,
+          stop.lat,
+          stop.lng,
+        );
+
+        // Normalize angle difference to 0-180
+        double diff = (bus.bearing - bearingToStop).abs();
+        if (diff > 180) diff = 360 - diff;
+
+        // If angle > 100 degrees, it's likely behind or passed
+        if (diff > 100) isAhead = false;
+      }
+
+      if (isAhead && distance < minDistance) {
+        minDistance = distance;
+        nextStop = stop;
+      }
+    }
+
+    // Fallback logic if direction check fails
+    if (nextStop == null) {
+      for (final stop in route.stops) {
+        final distance = Geolocator.distanceBetween(
+          bus.lat,
+          bus.lng,
+          stop.lat,
+          stop.lng,
+        );
+        if (distance < minDistance) {
+          minDistance = distance;
+          nextStop = stop;
+        }
+      }
+    }
+
+    if (nextStop == null) {
+      return Text(
+        'At stop • ${bus.lastUpdateFormatted}',
+        style: const TextStyle(color: Colors.white70, fontSize: 13),
+      );
+    }
+
+    final avgSpeedMps = bus.speed > 2 ? bus.speed : 6.9;
+    final etaSeconds = minDistance / avgSpeedMps;
+    final etaMinutes = (etaSeconds / 60).ceil();
+
+    return Row(
+      children: [
+        const Icon(Icons.access_time, size: 14, color: Colors.orange),
+        const SizedBox(width: 4),
+        Expanded(
+          child: Text(
+            '~$etaMinutes min to ${nextStop.name}',
+            style: const TextStyle(color: Colors.orange, fontSize: 13),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
     );
   }
 
@@ -1219,164 +1614,449 @@ class _StudentScreenState extends State<StudentScreen>
   Widget _buildArrivalAlarmTab() {
     final primaryColor = Theme.of(context).primaryColor;
 
-    return StreamBuilder<DocumentSnapshot>(
-      stream: FirebaseFirestore.instance
-          .collection('users')
-          .doc(_authService.currentUser?.uid)
-          .snapshots(),
-      builder: (context, snapshot) {
-        final userData = snapshot.data?.data() as Map<String, dynamic>? ?? {};
-        final alarmEnabled = userData['arrivalAlarmEnabled'] ?? false;
-        final alarmDistance = (userData['arrivalAlarmDistance'] ?? 500)
-            .toDouble();
+    // Get route stops for the selected bus
+    return StreamBuilder<List<BusRoute>>(
+      stream: _firestoreService.streamRoutes(),
+      builder: (context, routeSnapshot) {
+        List<RouteStop> availableStops = [];
+        if (_trackedBus?.routeId != null && routeSnapshot.hasData) {
+          final route = routeSnapshot.data!
+              .where((r) => r.routeId == _trackedBus!.routeId)
+              .firstOrNull;
+          if (route != null) {
+            availableStops = route.orderedStops;
+          }
+        }
 
-        return SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Arrival Alarm',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: primaryColor,
-                ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Get notified when your bus is approaching your stop.',
-                style: TextStyle(color: Colors.white54),
-              ),
-              const SizedBox(height: 30),
+        return StreamBuilder<BusLocation?>(
+          stream: _selectedBusId != null
+              ? _firestoreService.streamBusLocation(_selectedBusId!)
+              : const Stream.empty(),
+          builder: (context, busSnapshot) {
+            final bus = busSnapshot.data;
 
-              // Alarm Toggle
-              Container(
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1E1E1E),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(
-                    color: alarmEnabled ? primaryColor : Colors.white24,
-                    width: alarmEnabled ? 2 : 1,
+            // Check alarm trigger condition
+            // Only trigger if bus is actively tracking (isActive)
+            if (_alarmEnabled &&
+                _selectedAlarmStop != null &&
+                bus != null &&
+                bus.isActive && // Bus must be actively tracking
+                !_alarmTriggered) {
+              final distance = Geolocator.distanceBetween(
+                bus.lat,
+                bus.lng,
+                _selectedAlarmStop!['lat'] as double,
+                _selectedAlarmStop!['lng'] as double,
+              );
+
+              if (distance <= _alarmDistance) {
+                _triggerAlarm();
+              }
+            }
+
+            return SingleChildScrollView(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Arrival Alarm',
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: primaryColor,
+                    ),
                   ),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 60,
-                      height: 60,
-                      decoration: BoxDecoration(
-                        color: alarmEnabled ? primaryColor : Colors.white12,
-                        borderRadius: BorderRadius.circular(15),
-                      ),
-                      child: Icon(
-                        Icons.alarm,
-                        size: 32,
-                        color: alarmEnabled ? Colors.black : Colors.white54,
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Get notified when your bus is approaching your stop.',
+                    style: TextStyle(color: Colors.white54),
+                  ),
+                  const SizedBox(height: 24),
+
+                  // Alarm Status Indicator
+                  _buildAlarmStatusCard(bus, primaryColor),
+
+                  const SizedBox(height: 20),
+
+                  // Stop Selection
+                  if (availableStops.isNotEmpty) ...[
+                    Text(
+                      'Select Your Stop',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: primaryColor,
                       ),
                     ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            alarmEnabled ? 'Alarm Active' : 'Alarm Off',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: alarmEnabled ? primaryColor : Colors.white,
-                            ),
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1E1E1E),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: _selectedAlarmStop?['stopId'] as String?,
+                          hint: const Text(
+                            'Choose a stop',
+                            style: TextStyle(color: Colors.white54),
                           ),
-                          Text(
-                            alarmEnabled
-                                ? 'You\'ll be notified when bus is near'
-                                : 'Enable to get arrival notifications',
-                            style: const TextStyle(
-                              color: Colors.white54,
-                              fontSize: 13,
+                          isExpanded: true,
+                          dropdownColor: const Color(0xFF2E2E2E),
+                          items: availableStops.map((stop) {
+                            return DropdownMenuItem<String>(
+                              value:
+                                  stop.name, // Using name as ID for simplicity
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    Icons.location_on,
+                                    color: primaryColor,
+                                    size: 20,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Text(
+                                      stop.name,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          }).toList(),
+                          onChanged: (stopId) async {
+                            if (stopId != null) {
+                              final stop = availableStops.firstWhere(
+                                (s) => s.name == stopId,
+                              );
+                              await _alarmService.setSelectedStop(
+                                stopId: stop.name,
+                                stopName: stop.name,
+                                lat: stop.lat,
+                                lng: stop.lng,
+                              );
+                              await _loadAlarmSettings();
+                            }
+                          },
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                  ] else ...[
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Colors.orange.withOpacity(0.3),
+                        ),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.warning_amber, color: Colors.orange),
+                          SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Select a bus first to see available stops.',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                              ),
                             ),
                           ),
                         ],
                       ),
                     ),
-                    Switch(
-                      value: alarmEnabled,
-                      activeColor: primaryColor,
-                      onChanged: (value) {
-                        FirebaseFirestore.instance
-                            .collection('users')
-                            .doc(_authService.currentUser?.uid)
-                            .update({'arrivalAlarmEnabled': value});
-                      },
-                    ),
+                    const SizedBox(height: 24),
                   ],
-                ),
-              ),
 
-              const SizedBox(height: 30),
-
-              // Distance Slider
-              Text(
-                'Alert Distance',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: primaryColor,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Get notified when bus is within ${alarmDistance.toInt()} meters',
-                style: const TextStyle(color: Colors.white54),
-              ),
-              const SizedBox(height: 16),
-              Slider(
-                value: alarmDistance,
-                min: 100,
-                max: 2000,
-                divisions: 19,
-                activeColor: primaryColor,
-                label: '${alarmDistance.toInt()}m',
-                onChanged: alarmEnabled
-                    ? (value) {
-                        FirebaseFirestore.instance
-                            .collection('users')
-                            .doc(_authService.currentUser?.uid)
-                            .update({'arrivalAlarmDistance': value.toInt()});
-                      }
-                    : null,
-              ),
-
-              const SizedBox(height: 40),
-
-              // Info Card
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: primaryColor.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: primaryColor.withOpacity(0.3)),
-                ),
-                child: Row(
-                  children: [
-                    Icon(Icons.info_outline, color: primaryColor),
-                    const SizedBox(width: 12),
-                    const Expanded(
-                      child: Text(
-                        'Make sure location permissions are enabled and the app is running in background for alarms to work.',
-                        style: TextStyle(color: Colors.white70, fontSize: 13),
-                      ),
+                  // Distance Slider with Human-Friendly Labels
+                  Text(
+                    'Alert Distance',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: primaryColor,
                     ),
-                  ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '${_alarmDistance}m ${_getDistanceHint(_alarmDistance)}',
+                    style: const TextStyle(color: Colors.white54),
+                  ),
+                  const SizedBox(height: 16),
+                  Slider(
+                    value: _alarmDistance.toDouble(),
+                    min: 100,
+                    max: 2000,
+                    divisions: 19,
+                    activeColor: _alarmEnabled ? primaryColor : Colors.grey,
+                    inactiveColor: Colors.white24,
+                    label: '${_alarmDistance}m',
+                    onChanged: _alarmEnabled
+                        ? (value) async {
+                            await _alarmService.setAlertDistance(value.toInt());
+                            setState(() => _alarmDistance = value.toInt());
+                          }
+                        : null,
+                  ),
+
+                  const SizedBox(height: 30),
+
+                  // Alarm Toggle
+                  _buildAlarmToggle(primaryColor),
+
+                  const SizedBox(height: 30),
+
+                  // Info Card
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: primaryColor.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: primaryColor.withOpacity(0.3)),
+                    ),
+                    child: const Row(
+                      children: [
+                        Icon(Icons.info_outline, color: Colors.white70),
+                        SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            'Keep the app open in background for alarms to work. No GPS tracking needed - only bus location is monitored.',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  String _getDistanceHint(int meters) {
+    if (meters <= 200) return '(~30 sec before arrival)';
+    if (meters <= 400) return '(~1-2 min before arrival)';
+    if (meters <= 600) return '(~2-3 min before arrival)';
+    if (meters <= 1000) return '(~3-5 min before arrival)';
+    return '(~5+ min before arrival)';
+  }
+
+  Widget _buildAlarmStatusCard(BusLocation? bus, Color primaryColor) {
+    Color statusColor;
+    IconData statusIcon;
+    String statusText;
+    String statusHint;
+
+    if (_alarmTriggered) {
+      statusColor = Colors.red;
+      statusIcon = Icons.notifications_active;
+      statusText = 'Bus Arriving!';
+      final timeStr = _alarmTriggeredAt != null
+          ? '${_alarmTriggeredAt!.hour}:${_alarmTriggeredAt!.minute.toString().padLeft(2, '0')}'
+          : 'just now';
+      statusHint = 'Alarm triggered at $timeStr';
+    } else if (!_alarmEnabled) {
+      statusColor = Colors.grey;
+      statusIcon = Icons.alarm_off;
+      statusText = 'Alarm Off';
+      statusHint = 'Enable to get notified';
+    } else if (_selectedAlarmStop == null) {
+      statusColor = Colors.orange;
+      statusIcon = Icons.location_off;
+      statusText = 'No Stop Selected';
+      statusHint = 'Select a stop below';
+    } else if (bus == null || !bus.isActive) {
+      statusColor = Colors.orange;
+      statusIcon = Icons.bus_alert;
+      statusText = 'Waiting for Bus';
+      statusHint = 'Bus not active yet';
+    } else {
+      statusColor = Colors.green;
+      statusIcon = Icons.alarm_on;
+      statusText = 'Alarm Armed';
+      statusHint = 'Waiting for bus at ${_selectedAlarmStop!['stopName']}';
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: statusColor.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: statusColor, width: 2),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: statusColor.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(statusIcon, color: statusColor, size: 28),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  statusText,
+                  style: TextStyle(
+                    color: statusColor,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  statusHint,
+                  style: const TextStyle(color: Colors.white54, fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+          if (_alarmTriggered)
+            ElevatedButton.icon(
+              onPressed: () async {
+                // Stop the alarm sound
+                await NotificationAlarmService.stopAlarm();
+                // Reset triggered state
+                await _alarmService.setAlarmTriggered(false);
+                // Also disable alarm to prevent re-triggering
+                await _alarmService.setAlarmEnabled(false);
+                await _loadAlarmSettings();
+              },
+              icon: const Icon(Icons.stop, size: 18),
+              label: const Text('Stop Alarm'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAlarmToggle(Color primaryColor) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: _alarmEnabled ? primaryColor : Colors.white24,
+          width: _alarmEnabled ? 2 : 1,
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 50,
+            height: 50,
+            decoration: BoxDecoration(
+              color: _alarmEnabled ? primaryColor : Colors.white12,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(
+              Icons.alarm,
+              size: 28,
+              color: _alarmEnabled ? Colors.black : Colors.white54,
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _alarmEnabled ? 'Alarm Enabled' : 'Alarm Disabled',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: _alarmEnabled ? primaryColor : Colors.white,
+                  ),
+                ),
+                Text(
+                  _alarmEnabled
+                      ? 'You\'ll be alerted when bus is near'
+                      : 'Tap switch to enable',
+                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: _alarmEnabled,
+            activeColor: primaryColor,
+            onChanged: (value) async {
+              await _alarmService.setAlarmEnabled(value);
+              // Save bus ID for alarm checking
+              if (_selectedBusId != null) {
+                await _alarmService.setSelectedBus(_selectedBusId!);
+              }
+              // Request notification permissions when enabling
+              if (value) {
+                await NotificationAlarmService.requestPermissions();
+              }
+              await _loadAlarmSettings();
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _triggerAlarm() async {
+    await _alarmService.setAlarmTriggered(true);
+    _alarmTriggered = true;
+    _alarmTriggeredAt = DateTime.now();
+
+    // Vibrate
+    HapticFeedback.vibrate();
+
+    // Show system notification with alarm sound (works in background)
+    final stopName = _selectedAlarmStop?['stopName'] ?? 'your stop';
+    await NotificationAlarmService.showAlarmNotification(stopName);
+
+    // Also show snackbar if app is in foreground
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.notifications_active, color: Colors.white),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Bus is arriving at $stopName!',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
               ),
             ],
           ),
-        );
-      },
-    );
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 10),
+        ),
+      );
+      setState(() {});
+    }
   }
 
   // ============================================

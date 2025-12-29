@@ -6,6 +6,7 @@ import 'manage_routes_screen.dart';
 import 'manage_drivers_screen.dart';
 import 'admin_map_screen.dart';
 import 'broadcast_screen.dart';
+import 'route_assignment_screen.dart';
 
 /// Admin Dashboard - Main screen for administrators.
 /// Shows overview stats and quick actions for managing the transport system.
@@ -114,7 +115,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
       physics: const NeverScrollableScrollPhysics(),
       crossAxisSpacing: 12,
       mainAxisSpacing: 12,
-      childAspectRatio: 1.0,
+      childAspectRatio: 1.4, // More compact (was 1.0)
       children: [
         _buildStatCard(
           'Active Buses',
@@ -151,7 +152,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
     Color color,
   ) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12), // Reduced from 16
       decoration: BoxDecoration(
         color: const Color(0xFF1E1E1E), // Dark Grey
         borderRadius: BorderRadius.circular(16),
@@ -180,7 +181,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
           Text(
             value,
             style: const TextStyle(
-              fontSize: 28,
+              fontSize: 24, // Reduced from 28
               fontWeight: FontWeight.bold,
               color: Colors.white,
             ),
@@ -201,7 +202,7 @@ class _AdminDashboardState extends State<AdminDashboard> {
       physics: const NeverScrollableScrollPhysics(),
       crossAxisSpacing: 12,
       mainAxisSpacing: 12,
-      childAspectRatio: 1.1,
+      childAspectRatio: 1.4, // More compact (was 1.1)
       children: [
         _buildActionCard(
           'Manage Buses',
@@ -237,6 +238,15 @@ class _AdminDashboardState extends State<AdminDashboard> {
           () => Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const AdminMapScreen()),
+          ),
+        ),
+        _buildActionCard(
+          'Route Assignment',
+          Icons.swap_horiz,
+          Colors.amber,
+          () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const RouteAssignmentScreen()),
           ),
         ),
         _buildActionCard(

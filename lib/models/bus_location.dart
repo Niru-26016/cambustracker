@@ -7,11 +7,16 @@ class BusLocation {
   final String? routeId; // Links to routes/{routeId}
   final double lat;
   final double lng;
-  final double speed; // in m/s
+  final double speed; // in km/h (cleaned by driver app)
   final double bearing; // direction in degrees
   final bool isActive;
   final String? driverId;
   final DateTime updatedAt;
+
+  // Stop tracking for ETA calculation
+  final int
+  currentStopIndex; // Index of stop bus just passed (0 = before first stop)
+  final String? nextStopName; // Name of next upcoming stop
 
   BusLocation({
     required this.busId,
@@ -24,6 +29,8 @@ class BusLocation {
     required this.isActive,
     this.driverId,
     required this.updatedAt,
+    this.currentStopIndex = 0,
+    this.nextStopName,
   });
 
   /// Create BusLocation from Firestore document
@@ -39,6 +46,8 @@ class BusLocation {
       isActive: json['isActive'] ?? false,
       driverId: json['driverId'],
       updatedAt: json['updatedAt']?.toDate() ?? DateTime.now(),
+      currentStopIndex: json['currentStopIndex'] ?? 0,
+      nextStopName: json['nextStopName'],
     );
   }
 
@@ -54,6 +63,8 @@ class BusLocation {
       'isActive': isActive,
       'driverId': driverId,
       'updatedAt': updatedAt,
+      'currentStopIndex': currentStopIndex,
+      'nextStopName': nextStopName,
     };
   }
 
@@ -62,8 +73,8 @@ class BusLocation {
     return DateTime.now().difference(updatedAt).inSeconds > 30;
   }
 
-  /// Get speed in km/h
-  double get speedKmh => speed * 3.6;
+  /// Get speed in km/h (speed is already in km/h from driver app)
+  double get speedKmh => speed;
 
   /// Get formatted last update time
   String get lastUpdateFormatted {

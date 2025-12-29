@@ -3,6 +3,7 @@ import '../models/bus_location.dart';
 import '../models/bus_model.dart';
 import '../models/route_model.dart';
 import '../models/driver_model.dart';
+import '../models/trip_model.dart';
 
 /// FirestoreService handles all Firestore operations.
 /// Uses streams for real-time updates as per project requirements.
@@ -18,6 +19,8 @@ class FirestoreService {
       _firestore.collection('drivers');
   CollectionReference<Map<String, dynamic>> get _usersRef =>
       _firestore.collection('users');
+  CollectionReference<Map<String, dynamic>> get _tripsRef =>
+      _firestore.collection('trips');
 
   // ==================== BUS OPERATIONS ====================
 
@@ -366,5 +369,350 @@ class FirestoreService {
       'totalRoutes': routes.docs.length,
       'totalDrivers': drivers.docs.length,
     };
+  }
+
+  // ==================== BULK IMPORT OPERATIONS ====================
+
+  /// Bulk import multiple drivers (skips duplicates by email/phone)
+  /// busAssignments: Map from driver index to bus name/number for assignment
+  Future<Map<String, dynamic>> bulkImportDrivers(
+    List<Driver> drivers, {
+    Map<int, String>? busAssignments,
+  }) async {
+    int successCount = 0;
+    int skippedCount = 0;
+    final List<String> errors = [];
+
+    // Get existing drivers to check for duplicates
+    final existingDrivers = await getDrivers();
+
+    // Create lookup maps for existing drivers by email and phone
+    final Map<String, Driver> existingByEmail = {};
+    final Map<String, Driver> existingByPhone = {};
+    for (final d in existingDrivers) {
+      if (d.email.isNotEmpty) {
+        existingByEmail[d.email.toLowerCase()] = d;
+      }
+      if (d.phone != null && d.phone!.isNotEmpty) {
+        existingByPhone[d.phone!] = d;
+      }
+    }
+
+    // Get existing buses for assignment lookup by bus number
+    Map<String, String> busNumberToId = {};
+    if (busAssignments != null && busAssignments.isNotEmpty) {
+      // Fetch all buses from Firestore to get bus numbers
+      final busSnapshot = await _busesRef.get();
+      for (final doc in busSnapshot.docs) {
+        final data = doc.data();
+        // Get bus number from the name field or use doc id
+        final busName = data['name']?.toString() ?? '';
+        final busId = doc.id;
+
+        // Extract number from bus name like "Bus 1 - Main Campus" or just use the name
+        // Also support pure numbers like "69", "56"
+        busNumberToId[busName.toLowerCase()] = busId;
+        busNumberToId[busId.toLowerCase()] = busId;
+
+        // Extract numbers from name for matching (e.g., "69" from "Bus 69")
+        final numMatch = RegExp(r'\d+').firstMatch(busName);
+        if (numMatch != null) {
+          busNumberToId[numMatch.group(0)!] = busId;
+        }
+      }
+    }
+
+    int updatedCount = 0;
+
+    for (int i = 0; i < drivers.length; i++) {
+      final driver = drivers[i];
+
+      // Check for bus assignment from import data
+      String? assignedBusId;
+      if (busAssignments != null && busAssignments.containsKey(i)) {
+        final busNumber = busAssignments[i]!.toLowerCase().trim();
+        if (busNumber.isNotEmpty) {
+          // Try to find matching bus by number
+          assignedBusId = busNumberToId[busNumber];
+          if (assignedBusId == null) {
+            // Try partial match
+            for (final entry in busNumberToId.entries) {
+              if (entry.key.contains(busNumber) ||
+                  busNumber.contains(entry.key)) {
+                assignedBusId = entry.value;
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // Check if driver already exists (by email or phone)
+      Driver? existingDriver;
+      if (driver.email.isNotEmpty &&
+          existingByEmail.containsKey(driver.email.toLowerCase())) {
+        existingDriver = existingByEmail[driver.email.toLowerCase()];
+      } else if (driver.phone != null &&
+          driver.phone!.isNotEmpty &&
+          existingByPhone.containsKey(driver.phone)) {
+        existingDriver = existingByPhone[driver.phone!];
+      }
+
+      try {
+        if (existingDriver != null) {
+          // Check if there are new details to update
+          bool hasNewData = false;
+          String? newEmail;
+          String? newPhone;
+          String? newBusId;
+
+          // Check for new email
+          if (driver.email.isNotEmpty && existingDriver.email != driver.email) {
+            newEmail = driver.email;
+            hasNewData = true;
+          }
+
+          // Check for new phone
+          if (driver.phone != null &&
+              driver.phone!.isNotEmpty &&
+              existingDriver.phone != driver.phone) {
+            newPhone = driver.phone;
+            hasNewData = true;
+          }
+
+          // Check for new bus assignment
+          if (assignedBusId != null &&
+              existingDriver.assignedBusId != assignedBusId) {
+            newBusId = assignedBusId;
+            hasNewData = true;
+          }
+
+          if (hasNewData) {
+            // Update existing driver with new details
+            final updatedDriver = existingDriver.copyWith(
+              name: driver.name.isNotEmpty ? driver.name : null,
+              phone: newPhone,
+              assignedBusId: newBusId,
+            );
+            await saveDriver(updatedDriver);
+            updatedCount++;
+            errors.add(
+              'Row ${i + 1}: Updated "${driver.name}" with new details',
+            );
+          } else {
+            skippedCount++;
+            errors.add(
+              'Row ${i + 1}: Driver "${driver.name}" already exists (no new data)',
+            );
+          }
+        } else {
+          // New driver - create with bus assignment if found
+          final driverToSave = assignedBusId != null
+              ? driver.copyWith(assignedBusId: assignedBusId)
+              : driver;
+
+          await saveDriver(driverToSave);
+          successCount++;
+
+          // Add to lookup maps to catch duplicates within the import file
+          if (driver.email.isNotEmpty)
+            existingByEmail[driver.email.toLowerCase()] = driverToSave;
+          if (driver.phone != null)
+            existingByPhone[driver.phone!] = driverToSave;
+        }
+      } catch (e) {
+        errors.add('Row ${i + 1}: Failed to import - $e');
+      }
+    }
+
+    return {
+      'successCount': successCount,
+      'updatedCount': updatedCount,
+      'skippedCount': skippedCount,
+      'failedCount':
+          drivers.length - successCount - updatedCount - skippedCount,
+      'errors': errors,
+    };
+  }
+
+  /// Bulk import multiple buses (skips duplicates by bus number)
+  Future<Map<String, dynamic>> bulkImportBuses(
+    List<Map<String, dynamic>> buses,
+  ) async {
+    int successCount = 0;
+    int skippedCount = 0;
+    final List<String> errors = [];
+
+    // Get existing buses to check for duplicates
+    final existingBuses = await getAvailableBuses();
+    final existingNames = existingBuses
+        .map((b) => b['name']!.toLowerCase())
+        .toSet();
+
+    for (int i = 0; i < buses.length; i++) {
+      final bus = buses[i];
+      final name = bus['name'] as String;
+
+      // Check for duplicates by name
+      if (existingNames.contains(name.toLowerCase())) {
+        skippedCount++;
+        errors.add('Row ${i + 1}: Bus "$name" already exists');
+        continue;
+      }
+
+      try {
+        final busId = 'bus_${DateTime.now().millisecondsSinceEpoch}_$i';
+        await saveBus(busId: busId, name: name);
+        successCount++;
+        existingNames.add(name.toLowerCase());
+      } catch (e) {
+        errors.add('Row ${i + 1}: Failed to import - $e');
+      }
+    }
+
+    return {
+      'successCount': successCount,
+      'skippedCount': skippedCount,
+      'failedCount': buses.length - successCount - skippedCount,
+      'errors': errors,
+    };
+  }
+
+  // ==================== TRIP OPERATIONS ====================
+
+  /// Stream all active trips
+  Stream<List<Trip>> streamActiveTrips() {
+    return _tripsRef.where('status', isEqualTo: 'active').snapshots().map((
+      snapshot,
+    ) {
+      return snapshot.docs.map((doc) {
+        return Trip.fromJson(doc.data(), doc.id);
+      }).toList();
+    });
+  }
+
+  /// Get active trip for a specific route
+  Future<Trip?> getActiveTripForRoute(String routeId) async {
+    final snapshot = await _tripsRef
+        .where('status', isEqualTo: 'active')
+        .where('routeIds', arrayContains: routeId)
+        .limit(1)
+        .get();
+
+    if (snapshot.docs.isEmpty) return null;
+    return Trip.fromJson(snapshot.docs.first.data(), snapshot.docs.first.id);
+  }
+
+  /// Get active trip for a specific bus
+  Future<Trip?> getActiveTripForBus(String busId) async {
+    final snapshot = await _tripsRef
+        .where('status', isEqualTo: 'active')
+        .where('busId', isEqualTo: busId)
+        .limit(1)
+        .get();
+
+    if (snapshot.docs.isEmpty) return null;
+    return Trip.fromJson(snapshot.docs.first.data(), snapshot.docs.first.id);
+  }
+
+  /// Create a new trip (assign bus to routes)
+  Future<Trip> createTrip({
+    required String busId,
+    required List<String> routeIds,
+    String? driverId,
+    required String createdBy,
+  }) async {
+    // End any existing active trip for this bus (a bus can only serve one route set at a time)
+    final existingBusTrip = await getActiveTripForBus(busId);
+    if (existingBusTrip != null) {
+      await endTrip(existingBusTrip.tripId);
+    }
+
+    // NOTE: We do NOT end existing trips for routes
+    // Multiple buses CAN serve the same route simultaneously
+
+    // Create new trip
+    final docRef = _tripsRef.doc();
+    final trip = Trip(
+      tripId: docRef.id,
+      busId: busId,
+      routeIds: routeIds,
+      driverId: driverId,
+      isCombined: routeIds.length > 1,
+      status: 'active',
+      createdBy: createdBy,
+      createdAt: DateTime.now(),
+    );
+
+    await docRef.set(trip.toJson());
+
+    // Also update bus with first route for backward compatibility
+    await _busesRef.doc(busId).update({
+      'routeId': routeIds.first,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+
+    return trip;
+  }
+
+  /// End a trip (mark as completed)
+  Future<void> endTrip(String tripId) async {
+    await _tripsRef.doc(tripId).update({
+      'status': 'completed',
+      'endedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  /// Unassign bus from all routes (end current trip)
+  Future<void> unassignBus(String busId) async {
+    final activeTrip = await getActiveTripForBus(busId);
+    if (activeTrip != null) {
+      await endTrip(activeTrip.tripId);
+    }
+
+    // Clear routeId on bus
+    await _busesRef.doc(busId).update({
+      'routeId': null,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  /// Get buses that are not currently assigned to any active trip
+  Future<List<Bus>> getUnassignedBuses() async {
+    // Get all buses
+    final busSnapshot = await _busesRef.get();
+    final allBuses = busSnapshot.docs
+        .map((doc) => Bus.fromJson(doc.data(), doc.id))
+        .toList();
+
+    // Get active trips
+    final activeTrips = await _tripsRef
+        .where('status', isEqualTo: 'active')
+        .get();
+
+    final assignedBusIds = activeTrips.docs
+        .map((doc) => doc.data()['busId'] as String)
+        .toSet();
+
+    return allBuses
+        .where((bus) => !assignedBusIds.contains(bus.busId))
+        .toList();
+  }
+
+  /// Stream unassigned buses (real-time)
+  Stream<List<Bus>> streamUnassignedBuses() {
+    return streamBuses().asyncMap((allBuses) async {
+      final activeTrips = await _tripsRef
+          .where('status', isEqualTo: 'active')
+          .get();
+
+      final assignedBusIds = activeTrips.docs
+          .map((doc) => doc.data()['busId'] as String)
+          .toSet();
+
+      return allBuses
+          .where((bus) => !assignedBusIds.contains(bus.busId))
+          .toList();
+    });
   }
 }
