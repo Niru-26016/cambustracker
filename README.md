@@ -137,7 +137,7 @@ See `firestore.rules` for Firestore security configuration.
 
 ## 🤝 Related Projects
 
-- [CambusTracker Driver](https://github.com/yourusername/cambustracker_driver) - Companion driver app for real-time location sharing
+- [CambusTracker Driver](https://github.com/Niru-26016/cambustracker_driver) - Companion driver app for real-time location sharing
 
 ## 📄 License
 
