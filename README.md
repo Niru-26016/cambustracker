@@ -85,7 +85,7 @@ lib/
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/cambustracker.git
+   git clone https://github.com/Niru-26016/cambustracker.git
    cd cambustracker
    ```
 
