@@ -1,27 +1,83 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Users collection
-    // Users can read/write their own profile
-    match /users/{userId} {
-      allow read: if request.auth != null && request.auth.uid == userId;
-      allow create: if request.auth != null && request.auth.uid == userId;
-      allow update: if request.auth != null && request.auth.uid == userId;
-      allow delete: if request.auth != null && request.auth.uid == userId;
+
+    // Helper: check if user is authenticated
+    function isAuth() {
+      return request.auth != null;
     }
-    
+
+    // Helper: check if user document exists and get role
+    function userExists() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getUserRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    // Helper: check if user is admin
+    function isAdmin() {
+      return isAuth() && userExists() && getUserRole() == 'admin';
+    }
+
+    // Helper: check if user is a registered driver (in drivers collection)
+    function isRegisteredDriver() {
+      return isAuth() && exists(/databases/$(database)/documents/drivers/$(request.auth.uid));
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuth() && (request.auth.uid == userId || (userExists() && getUserRole() == 'admin'));
+      allow create: if isAuth() && request.auth.uid == userId;
+      allow update: if isAuth() && (request.auth.uid == userId || isAdmin());
+      allow delete: if isAdmin();
+    }
+
     // Buses collection
-    // Anyone authenticated can read bus locations (for students)
-    // Only drivers can write to bus documents
     match /buses/{busId} {
-      // All authenticated users can read (students need this)
-      allow read: if request.auth != null;
-      
-      // Only drivers can write bus locations
-      allow write: if request.auth != null 
-        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "driver";
+      allow read: if isAuth();
+      allow create, delete: if isAdmin();
+      allow update: if isAuth();
+    }
+
+    // Routes collection
+    match /routes/{routeId} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
+    }
+
+    // Drivers collection
+    // Any authenticated user can read (driver app needs to verify itself)
+    // Admins can manage, drivers can update their own linked doc
+    match /drivers/{driverId} {
+      allow read: if isAuth();
+      allow create, delete: if isAdmin();
+      allow update: if isAuth();
+    }
+
+    // Trips collection
+    match /trips/{tripId} {
+      allow read: if isAuth();
+      allow write: if isAuth();
+    }
+
+    // Bus locations collection (real-time tracking data)
+    match /bus_locations/{busId} {
+      allow read: if isAuth();
+      allow write: if isAuth();
+    }
+
+    // Lost items collection
+    match /lost_items/{itemId} {
+      allow read: if isAuth();
+      allow write: if isAuth();
+    }
+
+    // Broadcasts / announcements
+    match /broadcasts/{messageId} {
+      allow read: if isAuth();
+      allow write: if isAdmin();
     }
   }
 }
